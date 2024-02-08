@@ -7,7 +7,7 @@ import numpy as np
 
 
 def harmonic_extension_neumann(displacement, facet_f, g=None):
-    '''Using control for Neuamann bcs'''
+    '''Using control for Neumann bcs'''
     mesh = displacement.function_space().mesh()
     
     # Displacement will be defined via control ...
@@ -16,6 +16,7 @@ def harmonic_extension_neumann(displacement, facet_f, g=None):
         g = Function(G)
 
     n = FacetNormal(mesh)
+    ds = Measure('ds', domain=mesh, subdomain_data=facet_f)
 
     d, dd = TrialFunction(D), TestFunction(D)
     a_harm = inner(grad(d), grad(dd))*dx
@@ -32,6 +33,35 @@ def harmonic_extension_neumann(displacement, facet_f, g=None):
 
     return g
 
+
+def harmonic_extension_dirichlet(displacement, facet_f, g=None):
+    '''Using control for Neumann bcs'''
+    mesh = displacement.function_space().mesh()
+    
+    # Displacement will be defined via control ...
+    if g is None:
+        G = VectorFunctionSpace(mesh, 'CG', 1)
+        g = Function(G)
+
+    n = FacetNormal(mesh)
+
+    d, dd = TrialFunction(D), TestFunction(D)
+    a_harm = inner(grad(d), grad(dd))*dx
+    # ... as a Neumann bcs in this case
+    L_harm = inner(Constant((0, 0)), dd)*dx
+
+    harm_bcs = [DirichletBC(D, Constant((0, 0)), facet_f, 1),
+                DirichletBC(D, Constant((0, 0)), facet_f, 2),
+                DirichletBC(D, Constant((0, 0)), facet_f, 3),
+                DirichletBC(D, Constant((0, 0)), facet_f, 4),
+                #
+                DirichletBC(D, g, facet_f, 5)]
+
+    A_harm, b_harm = assemble_system(a_harm, L_harm, harm_bcs)
+    solve(A_harm, displacement.vector(), b_harm)
+
+    return g
+    
 # --------------------------------------------------------------------
 
 if __name__ == '__main__':
@@ -41,6 +71,10 @@ if __name__ == '__main__':
     w = 1
     r = 0.2
 
+    which_extension = 'harmonic_neumann'
+    
+    # ----------
+    
     boundaries = channel_geometry(fl, bl, w, r, lc=0.1, R=None, center=None)
 
     mesh = boundaries.mesh()
@@ -77,8 +111,15 @@ if __name__ == '__main__':
 
     D = VectorFunctionSpace(mesh, 'CG', 1)
     dh = Function(D, name='Displacement')
+
+    # NOTE: different extensions need different regularizations
+    extension = {
+        'harmonic_neumann': harmonic_extension_neumann,
+        'harmonic_dirichlet': harmonic_extension_dirichlet
+    }[which_extension]
+       
     # Define the problem for displacement dh returning a control variable
-    g = harmonic_extension_neumann(dh, facet_f)
+    g = extension(dh, facet_f)
 
     # With displacement define deformation and transform operators
     x = SpatialCoordinate(mesh)
@@ -120,19 +161,14 @@ if __name__ == '__main__':
 
     dissipation = assemble((mu/2)*inner(sym(Grad(u)), sym(Grad(u)))*J*dx)
 
-    # For the volume constraint, the hole should keep its volume
+    # Kepp the volume
     alpha_vol = 10_000
 
-    xmin, xmax = np.min(mesh.coordinates(), axis=0), np.max(mesh.coordinates(), axis=0)
-    length, width = xmax - xmin
-    full_area = 0 #length*width
 
     ref_domain_area = assemble(Constant(1)*dx(domain=mesh))
-    hole_area = full_area - ref_domain_area
+    current_area = assemble(J*dx)
 
-    current_hole_area = full_area - assemble(J*dx)
-
-    volume_cstr = alpha_vol*(current_hole_area - hole_area)**2
+    volume_cstr = alpha_vol*(ref_domain_area - current_area)**2
 
     # Some regularizion of the bdry?
     alpha_sur = 1E-1
@@ -146,16 +182,16 @@ if __name__ == '__main__':
     g_opt = minimize(loss_reduced, options={'disp': True}, method='L-BFGS-B')
 
     g.assign(g_opt)
-    harmonic_extension_neumann(dh, facet_f, g=g)    
+    extension(dh, facet_f, g=g)    
 
     A, b = assemble_system(a, L, bcs)
     solve(A, s.vector(), b)
 
     # ---
-    File('control.pvd') << g
+    File(f'results/{which_extension}/control.pvd') << g
 
     ALE.move(mesh, dh)
 
     uh, ph = s.split(deepcopy=True)
-    File('uh_optim.pvd') << uh
-    File('ph_optim.pvd') << ph
+    File(f'results/{which_extension}/uh_optim.pvd') << uh
+    File(f'results/{which_extension}/ph_optim.pvd') << ph
