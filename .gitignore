@@ -1,0 +1,7 @@
+*.pyc
+*.pvd
+*.vtu
+*~
+
+/results
+/__pycache__
